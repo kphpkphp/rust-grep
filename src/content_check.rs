@@ -3,8 +3,10 @@
 当前仅实现声明支持的文件解读
 */
 
-use crate::data_struct::{DataStruct, DataStructPackage, FileContentPage, FilePageContainer, PageMetaData, SearchHit,FileMetadata,PageMetaDataContainer};
+use crate::{data_struct::{DataStruct, DataStructPackage, FileContentPage, FileMetadata, FilePageContainer, PageMetaData, PageMetaDataContainer, SearchHit}};
 use std::collections::HashMap;
+use crate::config::{get_config};
+use std::path::{Path};
 
 enum QueryMode {
     Keyword(String),
@@ -15,8 +17,6 @@ enum QueryMode {
 pub enum QueryError{
     EmptyQuery,
 }
-
-
 
 //加这两个是为了便于打印和测试断言
 #[derive(Debug,PartialEq)]
@@ -57,10 +57,8 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
     }
 
     let mut metadata_vec: Vec<FileMetadata>=Vec::new();
-    let mut search_hit_map:HashMap<String, FileContentPage<'a>>=HashMap::new();
-    let mut pmp:HashMap<usize, PageMetaData>=HashMap::new();
-
-    let page_size = 20;
+    let mut search_hit_map:HashMap<&'a Path, FileContentPage<'a>>=HashMap::new();
+    // let mut pmp:HashMap<usize, PageMetaData>=HashMap::new();
 
     //遍历所有的file，获取结果
     //这里记录meta_data、记录数据map
@@ -69,10 +67,9 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
     //map、filter_map必须有collect()才执行，for_each是直接执行
     .for_each(|(idx,data_struct_package)|{
             
-            //添加文件metadata,to_string()自带clone()
-            metadata_vec.push(FileMetadata{file_path:data_struct_package.data_path.to_string()});
+            //添加文件metadata
+            metadata_vec.push(FileMetadata{file_path:&data_struct_package.data_path});
             
-
             let lines_len;
             //获取检索结果
             let matched_lines = keyword_match(&data_struct_package.data_struct, query);
@@ -84,28 +81,18 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
                 lines_len = matched_lines.len();
             }
 
-            let pmd=PageMetaData{
-                    page_number:1,
-                    page_size:page_size,
-                    total_pages:1,
-                    total_lines:lines_len,
-                };
-                pmp.insert(idx, pmd);
-            
             let  fcp = FileContentPage{
                 query_result:matched_lines
             };
-            search_hit_map.insert(data_struct_package.data_path.clone(), fcp);
+            search_hit_map.insert(&data_struct_package.data_path, fcp);
 
         }
     );
     
-    
-    let pmc=PageMetaDataContainer {
-        page_metadata_map:pmp};
+
 
     let fpc = FilePageContainer{
-        page_metadata : pmc,
+        page_metadata : None,
         file_metadata_vec:metadata_vec,
         search_hit_map:search_hit_map,
     };
@@ -119,6 +106,8 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
 //cfg(test) 是 Rust 中的一个条件编译属性，用于标记仅在测试环境下编译和运行。
 #[cfg(test)]
 mod tests{
+    use crate::data_struct::DataStatus;
+
     use super::*; // 引入父作用域中的函数和结构体
 
     #[test]
@@ -130,11 +119,13 @@ mod tests{
                 "No match here.".to_string(),
             ],
         };
+
+        let path_obj = std::path::Path::new("D:/test");
         
         let data_struct_package = DataStructPackage{
-            data_path:"/test".to_string(),
+            data_path:path_obj.to_path_buf(),
             data_struct:data_struct,
-            data_status:"success".to_string(),
+            data_status:DataStatus::SUCCESS,
         };
 
         let mut dsp_vec = Vec::new();
@@ -144,8 +135,8 @@ mod tests{
         let result = query_data_struct(&dsp_vec, "keyword").unwrap();
 
         //unwrap()也能解option包
-        assert_eq!(result.search_hit_map.get("/test").unwrap().query_result.len(), 1);
-        assert_eq!(result.search_hit_map.get("/test").unwrap().query_result[0].matched_lines, &"Another line with keyword.".to_string());
+        assert_eq!(result.search_hit_map.get(path_obj).unwrap().query_result.len(), 1);
+        assert_eq!(result.search_hit_map.get(path_obj).unwrap().query_result[0].matched_lines, &"Another line with keyword.".to_string());
 
         // 测试空查询
         let result = query_data_struct(&dsp_vec, "");
@@ -155,25 +146,11 @@ mod tests{
 
         // 测试没有匹配项
         let result = query_data_struct(&dsp_vec, "Python").unwrap();
-        assert!(result.search_hit_map.get("/test").unwrap().query_result.is_empty());
-
-        
+        assert!(result.search_hit_map.get(path_obj).unwrap().query_result.is_empty());
 
 
     }
 
-
-
-
-    // #[test]
-    // fn test_lifetime_protection() {
-    //     let result;
-    //     {
-    //         let data = DataStruct { values: vec!["test".into()] };
-    //         result = query_data_struct(&data, "test"); 
-    //     } // data 在这里被销毁了
-    //     // println!("{:?}", result); // 如果取消这一行的注释，Rust 编译器会拒绝编译
-    // }
 
 
 }

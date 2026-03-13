@@ -2,7 +2,9 @@
 mod file_read;
 mod data_struct;
 mod content_check;
+mod config;
 
 fn main() {
+    config::init();
     println!("Hello, world!");
 }

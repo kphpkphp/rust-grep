@@ -56,15 +56,28 @@
 */
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+//Path是借用，不能用于存储
+use std::path::{Path,PathBuf};
+use crate::config::{get_config};
 
+
+pub struct Config {
+    page_size: u32,
+}
 
 pub struct DataStruct {
     pub values: Vec<String>,
 }
 
+
+pub enum DataStatus{
+    SUCCESS,
+    //让枚举携带额外的错误信息
+    ERROR(String),
+}
+
 pub struct DataStructPackage{
-    pub data_status: String,
+    pub data_status: DataStatus,
     pub data_path: PathBuf,
     pub data_struct: DataStruct,
 }
@@ -82,13 +95,13 @@ pub struct QueryLine{
 
 
 pub struct SearchHit<'a> {
-    pub matched_lines: &'a String,
+    pub matched_lines: &'a str,
     pub line_number: usize,
     pub hit_position_vec:Vec<(usize,usize)>
 }
 
-pub struct FileMetadata{
-    pub file_path:String,
+pub struct FileMetadata<'a>{
+    pub file_path:&'a Path,
 }
 
 pub struct FileContentPage<'a> {
@@ -96,11 +109,32 @@ pub struct FileContentPage<'a> {
 }
 
 pub struct PageMetaData{
-    pub page_number: usize,
+    pub current_page: usize,
     pub page_size: usize,
     pub total_pages: usize,
     pub total_lines: usize,
 }
+
+impl PageMetaData {
+    pub fn try_next(&mut self) -> Result<usize, &'static str> {
+        if self.current_page < self.total_pages {
+            self.current_page += 1;
+            Ok(self.current_page)
+        } else {
+            Err("已是末页")
+        }
+    }
+    
+    pub fn try_prev(&mut self) -> Result<usize, &'static str> {
+        if self.current_page > 1 {
+            self.current_page -= 1;
+            Ok(self.current_page)
+        } else {
+            Err("已是首页")
+        }
+    }
+}
+
 
 
 pub struct PageMetaDataContainer{
@@ -114,19 +148,23 @@ impl PageMetaDataContainer {
         self.page_metadata_map.get(&page_index)
     }
 
+    //返回mut：1、self要mut 2、要get_mut() 3、返回的类型要是mut
+    pub fn get_mut_page_metadata(&mut self, page_index: usize) -> Option<&mut PageMetaData> {
+        // 使用 self 访问成员变量
+        self.page_metadata_map.get_mut(&page_index)
+    }
+
     pub fn set_page_medatada(&mut self,page_index:usize,pmd:PageMetaData)->(){
         self.page_metadata_map.insert(page_index, pmd);
     }
 
 }
 
-
 pub struct FilePageContainer<'a>{
-    pub file_metadata_vec:Vec<FileMetadata>,
-    pub page_metadata:PageMetaDataContainer,
-    pub search_hit_map:HashMap<String, FileContentPage<'a>>,
+    pub file_metadata_vec:Vec<FileMetadata<'a>>,
+    pub page_metadata:Option<PageMetaData>,
+    pub search_hit_map:HashMap<&'a Path, FileContentPage<'a>>,
 }
-
 
 /*
 
@@ -145,9 +183,47 @@ impl <'a> FilePageContainer<'a>{
         &self.file_metadata_vec
     }
 
-    pub fn get_
+    //获取数据
+    pub fn get_file_content_page(&self,file_path:&Path)->Option<&FileContentPage>{
+        self.search_hit_map.get(file_path)
+    }
 
+    pub fn new_page(& mut self,fcp:&FileContentPage){
 
+        //max()保证最小值是1，这里的max()指的是“两者中取大者”
+        let p_size=get_config().page_size.max(1);
+        let tot_lines = fcp.query_result.len();
+        //div_cell()向上取整
+        let p_num = tot_lines.div_ceil(p_size).max(1);
+
+        let pmd = PageMetaData{
+            page_size:p_size,
+            total_lines:tot_lines,
+            total_pages:p_num,
+            //当前页码
+            current_page:1,
+        };
+
+        //Option，需要封装成Some()
+        self.page_metadata=Some(pmd);
+
+    }
+
+    pub fn next_page(&mut self) -> Result<usize, &'static str> {
+
+        self.page_metadata
+            .as_mut()
+            .ok_or("未初始化分页数据")
+            .and_then(|m| m.try_next())
+    }
+
+    pub fn prev_page(&mut self) -> Result<usize, &'static str>  {
+        
+        self.page_metadata
+            .as_mut()
+            .ok_or("未初始化分页数据")
+            .and_then(|m| m.try_prev())
+    }
 
 
 }
