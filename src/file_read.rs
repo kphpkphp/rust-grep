@@ -274,8 +274,9 @@ mod tests {
         let path_exe = temp_file_exe.path().with_extension("exe");
         let path_exe_str = path_exe.to_str().unwrap();
         std::fs::File::create(path_exe_str).unwrap();
+        let path_exe_obj = std::path::Path::new(path_exe_str);
         
-        let result_exe = read_file_to_data_struct(path_obj);  
+        let result_exe = read_file_to_data_struct(path_exe_obj);  
         assert!(matches!(result_exe, Err(FileReadError::UnsupportedFormat)));
 
         // 清理测试产生的文件
@@ -409,7 +410,7 @@ mod tests {
         writeln!(valid_file, "valid content").unwrap(); // 请根据实际情况修改写入内容
 
         // 2. 创建一个错误文件 (假设它会导致 read_file_to_data_struct 返回 Err)
-        let invalid_file_path = dir_path.join("invalid.txt");
+        let invalid_file_path = dir_path.join("invalid.exe");
         let mut invalid_file = File::create(&invalid_file_path).unwrap();
         writeln!(invalid_file, "invalid content").unwrap(); // 请根据实际情况修改写入内容
 
@@ -438,7 +439,7 @@ mod tests {
                     error_count += 1;
                     // 验证错误包的路径是那个 invalid 文件
                     // 注意：因为读取顺序是不确定的，最好通过判断文件名来确认
-                    assert!(package.data_path.to_str().unwrap().contains("invalid.txt"));
+                    assert!(package.data_path.to_str().unwrap().contains("invalid.exe"));
                 }
                 _ => { // 假设你成功的状态是 DataStatus::OK 或是其他的
                     success_count += 1;
