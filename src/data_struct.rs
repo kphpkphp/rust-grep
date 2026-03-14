@@ -95,7 +95,7 @@ pub struct QueryLine{
 
 
 pub struct SearchHit<'a> {
-    pub matched_lines: &'a str,
+    pub matched_line: &'a str,
     pub line_number: usize,
     pub hit_position_vec:Vec<(usize,usize)>
 }

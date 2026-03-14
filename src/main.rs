@@ -3,6 +3,7 @@ mod file_read;
 mod data_struct;
 mod content_check;
 mod config;
+mod show;
 
 fn main() {
     config::init();

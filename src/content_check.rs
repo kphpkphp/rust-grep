@@ -39,7 +39,7 @@ fn keyword_match<'a>(data_struct: &'a DataStruct, keyword: &str) -> Vec<SearchHi
             None
         }else{
             Some(SearchHit{
-                    matched_lines: line,
+                    matched_line: line,
                     line_number: idx + 1,
                     hit_position_vec: matches,
             })
@@ -72,17 +72,17 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
             
             let lines_len;
             //获取检索结果
-            let matched_lines = keyword_match(&data_struct_package.data_struct, query);
+            let matched_line = keyword_match(&data_struct_package.data_struct, query);
 
-            if matched_lines.is_empty(){
+            if matched_line.is_empty(){
                 lines_len = 0;
             }
             else{
-                lines_len = matched_lines.len();
+                lines_len = matched_line.len();
             }
 
             let  fcp = FileContentPage{
-                query_result:matched_lines
+                query_result:matched_line
             };
             search_hit_map.insert(&data_struct_package.data_path, fcp);
 
@@ -136,7 +136,7 @@ mod tests{
 
         //unwrap()也能解option包
         assert_eq!(result.search_hit_map.get(path_obj).unwrap().query_result.len(), 1);
-        assert_eq!(result.search_hit_map.get(path_obj).unwrap().query_result[0].matched_lines, &"Another line with keyword.".to_string());
+        assert_eq!(result.search_hit_map.get(path_obj).unwrap().query_result[0].matched_line, &"Another line with keyword.".to_string());
 
         // 测试空查询
         let result = query_data_struct(&dsp_vec, "");

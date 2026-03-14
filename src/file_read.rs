@@ -106,13 +106,6 @@ impl From<io::Error> for PathReadError {
     }
 }
 
-/*
-
-AsRef原理
-AsRef是一个Trait，它的原理是，仅实现引用的转换，将实现这个Trait的对象当成&Path用
-实际调用as_ref时，基于原始类型的不同，可能做类型转换、访问内部数据并返回引用、
-但是需要注意，在最后的to_path_buf中，可能会做克隆
-*/
 
 //检查文件是否合法,输入&PathBuf，这里用Path是提供泛型能力，&Path可以接受&PathBuf、&Path以及&str等
 fn check_metadata(file: &File) -> Result<(), FileReadError> {
