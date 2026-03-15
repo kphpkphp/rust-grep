@@ -3,7 +3,7 @@
 当前仅实现声明支持的文件解读
 */
 
-use crate::{data_struct::{DataStruct, DataStructPackage, FileContentPage, FileMetadata, FilePageContainer, PageMetaData, PageMetaDataContainer, SearchHit}};
+use crate::{data_struct::{DataStruct, DataStructPackage, FileContentData, FileMetadata, FilePageContainer, PageMetaData, PageMetaDataContainer, SearchHit}};
 use std::collections::HashMap;
 use crate::config::{get_config};
 use std::path::{Path};
@@ -57,7 +57,7 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
     }
 
     let mut metadata_vec: Vec<FileMetadata>=Vec::new();
-    let mut search_hit_map:HashMap<&'a Path, FileContentPage<'a>>=HashMap::new();
+    let mut search_hit_map:HashMap<&'a Path, FileContentData<'a>>=HashMap::new();
     // let mut pmp:HashMap<usize, PageMetaData>=HashMap::new();
 
     //遍历所有的file，获取结果
@@ -81,7 +81,7 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
                 lines_len = matched_line.len();
             }
 
-            let  fcp = FileContentPage{
+            let  fcp = FileContentData{
                 query_result:matched_line
             };
             search_hit_map.insert(&data_struct_package.data_path, fcp);

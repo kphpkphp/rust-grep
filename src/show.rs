@@ -8,7 +8,7 @@
 基于ratatui和crossterm实现
 */
 
-use crate::data_struct::{DataStruct, FileContentPage, FilePageContainer, SearchHit};
+use crate::data_struct::{DataStruct, FileContentData, FilePageContainer, SearchHit,FileContentPage};
 use crate::config::get_config;
 use anyhow::{Ok,Context};
 use ratatui::{
@@ -36,8 +36,8 @@ struct AppState<'a> {
     //我选择了让AppState仅持有FilePageContainer的引用
     raw_data: &'a FilePageContainer<'a>,
     list_state: ListState,
-    //注意，Rust禁止自己持有又指向自身一部分的指针，因此这里要不然是AppState直接持有FileContentPage，同时持有FilePageContainer，要不然就是AppState仅持有FilePageContainer的引用，同时持有指向FilePageContainer的另一个引用
-    current_detail:Option<&'a FileContentPage<'a>>,
+    //注意，Rust禁止自己持有又指向自身一部分的指针，因此这里要不然是AppState直接持有FileContentData，同时持有FilePageContainer，要不然就是AppState仅持有FilePageContainer的引用，同时持有指向FilePageContainer的另一个引用
+    current_detail:Option<FileContentPage<'a>>,
     current_file_path:Option<&'a Path> ,
 }
 
@@ -105,7 +105,10 @@ impl Visualizer {
             AppView::SearchDetail => match key.code {
                 KeyCode::Esc | KeyCode::Backspace => {app.view = AppView::FileList; Ok(())},
                 KeyCode::Char('q') => return Ok(()),
-                KeyCode::Down => {Self::move_next(app);Ok(())},
+                KeyCode::Down => {
+                    Self::move_next(app);
+                    
+                    Ok(())},
                 KeyCode::Up => {Self::move_prev(app);Ok(())},
                 _ => Ok(())
             },
@@ -124,7 +127,7 @@ impl Visualizer {
 
     fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut AppState) -> anyhow::Result<()> {
         loop {
-            //anyhow包装的错误有硬性要求，直接?不满足要求，这里必须经过转换
+            //anyhow包装的错误有硬性类型要求，直接?不满足要求，这里必须经过转换
             terminal.draw(|f| ui(f, app)).map_err(|e| anyhow::anyhow!("Terminal error: {:?}", e))?;
             //这里需要将app的可变借用独立成一个函数，此时检查器才不会报借用冲突
             Self::process_key_action(app);
@@ -134,7 +137,7 @@ impl Visualizer {
     //ListState是专用于存储翻页等滚动的索引的
     fn move_next(app: &mut AppState) {
         let i = match app.list_state.selected() {
-            Some(i) => if i >= app.raw_data.page_metadata.as_ref().unwrap().total_pages { 1 } else { i + 1 },
+            Some(i) => if i >= app.raw_data.page_metadata.as_ref().unwrap().total_lines { 1 } else { i + 1 },
             None => 0,
         };
         app.list_state.select(Some(i));
@@ -142,7 +145,7 @@ impl Visualizer {
 
     fn move_prev(app: &mut AppState) {
         let i = match app.list_state.selected() {
-            Some(i) => if i == 1 { app.raw_data.page_metadata.as_ref().unwrap().total_pages } else { i - 1 },
+            Some(i) => if i == 1 { app.raw_data.page_metadata.as_ref().unwrap().total_lines } else { i - 1 },
             None => 0,
         };
         app.list_state.select(Some(i));
@@ -210,11 +213,13 @@ fn render_file_list(f: &mut Frame, app: &mut AppState, area: Rect) {
 
 
 //渲染检索结果的逻辑
+//注意，这里的逻辑恐怕不正确，要看下是否能正确的获取到数据
 fn render_search_detail(f: &mut Frame, app: &AppState, area: Rect) {
     if let Some(detail) = &app.current_detail {
         let mut text = Vec::new();
         
-        for q_line in &detail.query_result {
+        //切片直接迭代，非切片需要放引用（为了模式匹配）
+        for q_line in detail.query_result_page {
             // 实现高亮：将一行拆分为 [前缀, 匹配项, 后缀]
             let content = &q_line.matched_line;
             let mut spans = Vec::new();
@@ -294,7 +299,7 @@ fn restore_terminal(mut terminal: Terminal<ratatui::backend::CrosstermBackend<io
 }
 
 // 模拟根据 ID 获取文件内容的分页数据
-fn mock_fetch_detail<'a>() -> &'static FileContentPage<'a> {
+fn mock_fetch_detail<'a>() -> FileContentPage<'a> {
     
     let line_for_test_1:&'static str = "there is a test line";
     let line_for_test_2:&'static str = "A cat just in there";
@@ -315,14 +320,19 @@ fn mock_fetch_detail<'a>() -> &'static FileContentPage<'a> {
     };
     query_result_vec.push(sh_2);
 
-    let test_page = FileContentPage {
+    let test_data = FileContentData {
         query_result:query_result_vec,
     };
 
 
-    let static_ref: &'static FileContentPage = Box::leak(Box::new(test_page));
+    let static_ref: &'static FileContentData = Box::leak(Box::new(test_data));
 
-    static_ref
+    let fcp = FileContentPage{
+        query_result_page:&static_ref.query_result[0..static_ref.query_result.len()]
+    };
+
+    fcp
+    
 
 }
 
@@ -336,7 +346,7 @@ mod tests{
     use crate::data_struct::{FilePageContainer, PageMetaData, FileMetadata};
 
 
-    fn raw_mock_fetch_detail<'a>() -> (FileContentPage<'a>,FileContentPage<'a>) {
+    fn raw_mock_fetch_detail<'a>() -> (FileContentData<'a>,FileContentData<'a>) {
         
         let line_for_test_1:&'static str = "there is a test line";
         let line_for_test_2:&'static str = "A cat just in there";
@@ -358,7 +368,7 @@ mod tests{
         };
         query_result_vec.push(sh_2);
 
-        let test_page = FileContentPage {
+        let test_page = FileContentData {
             query_result:query_result_vec,
         };
 
@@ -383,7 +393,7 @@ mod tests{
         };
         query_result_vec_2.push(sh_4);
 
-        let test_page_2 = FileContentPage {
+        let test_page_2 = FileContentData {
             query_result:query_result_vec_2,
         };
 
@@ -396,9 +406,9 @@ mod tests{
     fn create_mock_container<'a>() -> FilePageContainer<'a> {
         let page_meta = PageMetaData {
             current_page: 1,
-            total_pages: 3,
+            total_pages: 1,
             page_size:20,
-            total_lines:2,
+            total_lines:3,
         };
         let file_pathbuf_1:&'static PathBuf = Box::leak(Box::new(PathBuf::from("file1.txt")));
         let file_pathbuf_2:&'static PathBuf =Box::leak(Box::new(PathBuf::from("file2.txt")));
@@ -409,7 +419,7 @@ mod tests{
         let (fcps_1,fcps_2) = raw_mock_fetch_detail();
 
         //HashMap要这样创建，生命周期写在类型声明处，新建用default()
-        let mut shm:HashMap<&'a Path, FileContentPage<'a>> = HashMap::default();
+        let mut shm:HashMap<&'a Path, FileContentData<'a>> = HashMap::default();
 
         shm.insert(file_pathbuf_1, fcps_1);
         shm.insert(file_pathbuf_1, fcps_2);

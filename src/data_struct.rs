@@ -104,9 +104,16 @@ pub struct FileMetadata<'a>{
     pub file_path:&'a Path,
 }
 
-pub struct FileContentPage<'a> {
+pub struct FileContentData<'a> {
     pub query_result: Vec<SearchHit<'a>>,
 }
+
+//这里存储按照页整理好的数据
+pub struct FileContentPage<'a> {
+    pub query_result_page: &'a [SearchHit<'a>],
+}
+
+
 
 pub struct PageMetaData{
     pub current_page: usize,
@@ -163,7 +170,7 @@ impl PageMetaDataContainer {
 pub struct FilePageContainer<'a>{
     pub file_metadata_vec:Vec<FileMetadata<'a>>,
     pub page_metadata:Option<PageMetaData>,
-    pub search_hit_map:HashMap<&'a Path, FileContentPage<'a>>,
+    pub search_hit_map:HashMap<&'a Path, FileContentData<'a>>,
 }
 
 /*
@@ -184,11 +191,26 @@ impl <'a> FilePageContainer<'a>{
     }
 
     //获取数据
-    pub fn get_file_content_page(&self,file_path:&Path)->Option<&FileContentPage>{
-        self.search_hit_map.get(file_path)
+    pub fn get_file_content_page(&self,file_path:&Path)->Option<FileContentPage>{
+        let fcp = self.search_hit_map.get(file_path);
+        let pg_size = self.page_metadata.as_ref().unwrap().page_size;
+        //在这里，根据当前的页码和每页条数，获取切片
+        let start = (self.page_metadata.as_ref().unwrap().current_page-1) * pg_size;
+        
+        if start >= self.page_metadata.as_ref().unwrap().total_pages {
+            return None; // 页码超出范围
+        }
+
+        let end = (start + pg_size).min(fcp.unwrap().query_result.len());
+        
+        // 获取 Vec 的切片引用
+        Some(FileContentPage {
+            query_result_page: &fcp.unwrap().query_result[start..end],
+        })
     }
 
-    pub fn new_page(& mut self,fcp:&FileContentPage){
+
+    pub fn new_page(& mut self,fcp:&FileContentData){
 
         //max()保证最小值是1，这里的max()指的是“两者中取大者”
         let p_size=get_config().page_size.max(1);
