@@ -44,7 +44,8 @@ struct AppState<'a> {
 impl<'a> AppState<'a>{
     fn new(data: &'a FilePageContainer<'a>) -> Self {
         let mut list_state = ListState::default();
-        list_state.select(Some(0));
+        //从1开始
+        list_state.select(Some(1));
         Self {
             view: AppView::FileList,
             raw_data: data,
@@ -71,48 +72,54 @@ impl Visualizer {
         res
     }
 
-    pub fn process_key_action(app: &mut AppState) -> anyhow::Result<()> {
-        if let Event::Key(key) = event::read()? {
-            match app.view {
-                AppView::FileList => match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Down => {Self::move_next(app);Ok(())},
-                    KeyCode::Up => {Self::move_prev(app);Ok(())},
-                    KeyCode::Enter => {
-                        if get_config().on_test{
-                            // 测试用数据（注意这里的Box::leak是强行构造持久变量的方法）
-                            let static_ref = Self::mock_fetch_detail();
-                            app.current_detail = Some(static_ref); 
-                        }
-                        else{
-                            //获取当前的Path-key
-                            if let Some(index) = app.list_state.selected() {
-                                if let Some(selected_file) = app.raw_data.file_metadata_vec.get(index) {
-                                    let file_path = &selected_file.file_path;
-                                    app.current_detail = app.raw_data.get_file_content_page(file_path); 
-                                    app.current_file_path = Some(file_path);
-                                }
+    //将按键处理的状态机逻辑剥离出来（将event::read()这个阻塞式且依赖环境的I/O操作单独放置，将可测试的逻辑拆出来）以便于测试
+    pub fn handle_key_event(app: &mut AppState, key: event::KeyEvent)-> anyhow::Result<()>{
+        match app.view {
+            AppView::FileList => match key.code {
+                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Down => {Self::move_next(app);Ok(())},
+                KeyCode::Up => {Self::move_prev(app);Ok(())},
+                KeyCode::Enter => {
+                    if get_config().on_test{
+                        // 测试用数据（注意这里的Box::leak是强行构造持久变量的方法）
+                        let static_ref = mock_fetch_detail();
+                        app.current_detail = Some(static_ref); 
+                    }
+                    else{
+                        //获取当前的Path-key
+                        if let Some(index) = app.list_state.selected() {
+                            if let Some(selected_file) = app.raw_data.file_metadata_vec.get(index) {
+                                let file_path = &selected_file.file_path;
+                                app.current_detail = app.raw_data.get_file_content_page(file_path); 
+                                app.current_file_path = Some(file_path);
                             }
                         }
-                        app.view = AppView::SearchDetail;
-
-                        Ok(())
-
                     }
-                    _ => Ok(())
-                },
-                AppView::SearchDetail => match key.code {
-                    KeyCode::Esc | KeyCode::Backspace => {app.view = AppView::FileList; Ok(())},
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Down => {Self::move_next(app);Ok(())},
-                    KeyCode::Up => {Self::move_prev(app);Ok(())},
-                    _ => Ok(())
-                },
-            }
+                    app.view = AppView::SearchDetail;
+
+                    Ok(())
+
+                }
+                _ => Ok(())
+            },
+            AppView::SearchDetail => match key.code {
+                KeyCode::Esc | KeyCode::Backspace => {app.view = AppView::FileList; Ok(())},
+                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Down => {Self::move_next(app);Ok(())},
+                KeyCode::Up => {Self::move_prev(app);Ok(())},
+                _ => Ok(())
+            },
         }
-        else{
-            return Ok(());
+
+
+    }
+
+    //将不好测试的逻辑单独放在一个地方
+    pub fn process_key_action(app: &mut AppState) -> anyhow::Result<()> {
+        if let Event::Key(key) = event::read()? {
+            Self::handle_key_event(app, key)?;
         }
+        Ok(())
     }
 
     fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut AppState) -> anyhow::Result<()> {
@@ -127,7 +134,7 @@ impl Visualizer {
     //ListState是专用于存储翻页等滚动的索引的
     fn move_next(app: &mut AppState) {
         let i = match app.list_state.selected() {
-            Some(i) => if i >= app.raw_data.page_metadata.as_ref().unwrap().total_pages - 1 { 0 } else { i + 1 },
+            Some(i) => if i >= app.raw_data.page_metadata.as_ref().unwrap().total_pages { 1 } else { i + 1 },
             None => 0,
         };
         app.list_state.select(Some(i));
@@ -135,45 +142,16 @@ impl Visualizer {
 
     fn move_prev(app: &mut AppState) {
         let i = match app.list_state.selected() {
-            Some(i) => if i == 0 { app.raw_data.page_metadata.as_ref().unwrap().total_pages - 1 } else { i - 1 },
+            Some(i) => if i == 1 { app.raw_data.page_metadata.as_ref().unwrap().total_pages } else { i - 1 },
             None => 0,
         };
         app.list_state.select(Some(i));
     }
 
-    // 模拟根据 ID 获取文件内容的分页数据
-    fn mock_fetch_detail<'a>() -> &'static FileContentPage<'a> {
-        
-        let line_for_test_1:&'static str = "there is a test line";
-        let line_for_test_2:&'static str = "A cat just in there";
 
-        let mut query_result_vec = Vec::new();
-        let sh_1 = SearchHit{
-            hit_position_vec:vec![(0,5)],
-            line_number:1,
-            matched_line:line_for_test_1,
-        };
-        query_result_vec.push(sh_1);
-
-
-        let sh_2 = SearchHit{
-            hit_position_vec:vec![(15,20)],
-            line_number:2,
-            matched_line:line_for_test_2,
-        };
-        query_result_vec.push(sh_2);
-
-        let test_page = FileContentPage {
-            query_result:query_result_vec,
-        };
-
-
-        let static_ref: &'static FileContentPage = Box::leak(Box::new(test_page));
-
-        static_ref
-
-    }
 }
+
+
 
 // --- UI 渲染函数 ---
 
@@ -313,4 +291,203 @@ fn restore_terminal(mut terminal: Terminal<ratatui::backend::CrosstermBackend<io
     
     terminal.show_cursor()?;
     Ok(())
+}
+
+// 模拟根据 ID 获取文件内容的分页数据
+fn mock_fetch_detail<'a>() -> &'static FileContentPage<'a> {
+    
+    let line_for_test_1:&'static str = "there is a test line";
+    let line_for_test_2:&'static str = "A cat just in there";
+
+    let mut query_result_vec = Vec::new();
+    let sh_1 = SearchHit{
+        hit_position_vec:vec![(0,5)],
+        line_number:1,
+        matched_line:line_for_test_1,
+    };
+    query_result_vec.push(sh_1);
+
+
+    let sh_2 = SearchHit{
+        hit_position_vec:vec![(15,20)],
+        line_number:2,
+        matched_line:line_for_test_2,
+    };
+    query_result_vec.push(sh_2);
+
+    let test_page = FileContentPage {
+        query_result:query_result_vec,
+    };
+
+
+    let static_ref: &'static FileContentPage = Box::leak(Box::new(test_page));
+
+    static_ref
+
+}
+
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    use std::{hash::Hash, path::PathBuf};
+    use std::collections::HashMap;
+    // 从 data_struct 引入以下结构体来构造测试数据
+    use crate::data_struct::{FilePageContainer, PageMetaData, FileMetadata};
+
+
+    fn raw_mock_fetch_detail<'a>() -> (FileContentPage<'a>,FileContentPage<'a>) {
+        
+        let line_for_test_1:&'static str = "there is a test line";
+        let line_for_test_2:&'static str = "A cat just in there";
+
+        let mut query_result_vec = Vec::new();
+
+        let sh_1 = SearchHit{
+            hit_position_vec:vec![(0,5)],
+            line_number:1,
+            matched_line:line_for_test_1,
+        };
+        query_result_vec.push(sh_1);
+
+
+        let sh_2 = SearchHit{
+            hit_position_vec:vec![(15,20)],
+            line_number:2,
+            matched_line:line_for_test_2,
+        };
+        query_result_vec.push(sh_2);
+
+        let test_page = FileContentPage {
+            query_result:query_result_vec,
+        };
+
+
+        let line_for_test_3:&'static str = "is a test line there";
+        let line_for_test_4:&'static str = "there A cat just in";
+
+        let mut query_result_vec_2 = Vec::new();
+
+        let sh_3 = SearchHit{
+            hit_position_vec:vec![(16,21)],
+            line_number:1,
+            matched_line:line_for_test_3,
+        };
+        query_result_vec_2.push(sh_3);
+
+
+        let sh_4 = SearchHit{
+            hit_position_vec:vec![(0,5)],
+            line_number:2,
+            matched_line:line_for_test_4,
+        };
+        query_result_vec_2.push(sh_4);
+
+        let test_page_2 = FileContentPage {
+            query_result:query_result_vec_2,
+        };
+
+        (test_page,test_page_2)
+
+    }
+    
+
+    /// 辅助函数：构造一个用于测试的 FilePageContainer 假数据
+    fn create_mock_container<'a>() -> FilePageContainer<'a> {
+        let page_meta = PageMetaData {
+            current_page: 1,
+            total_pages: 3,
+            page_size:20,
+            total_lines:2,
+        };
+        let file_pathbuf_1:&'static PathBuf = Box::leak(Box::new(PathBuf::from("file1.txt")));
+        let file_pathbuf_2:&'static PathBuf =Box::leak(Box::new(PathBuf::from("file2.txt")));
+
+        let meta1 = FileMetadata { file_path:&file_pathbuf_1 };
+        let meta2 = FileMetadata { file_path:&file_pathbuf_2 };
+
+        let (fcps_1,fcps_2) = raw_mock_fetch_detail();
+
+        //HashMap要这样创建，生命周期写在类型声明处，新建用default()
+        let mut shm:HashMap<&'a Path, FileContentPage<'a>> = HashMap::default();
+
+        shm.insert(file_pathbuf_1, fcps_1);
+        shm.insert(file_pathbuf_1, fcps_2);
+
+
+        FilePageContainer {
+            page_metadata: Some(page_meta),
+            file_metadata_vec: vec![meta1, meta2],
+            search_hit_map:shm,
+        }
+        
+        // unimplemented!("请根据你的 data_struct 补全 mock 数据的构造") 
+    }
+
+    #[test]
+    fn test_app_state_initialization() {
+        // 1. 准备测试数据
+        let container = create_mock_container();
+        
+        // 2. 初始化 AppState
+        let app = AppState::new(&container);
+
+        // 3. 断言初始状态是否符合预期
+        assert!(matches!(app.view, AppView::FileList), "初始视图应当是 FileList");
+        assert_eq!(app.list_state.selected(), Some(1), "列表应当默认选中第 1 项");
+        assert!(app.current_detail.is_none(), "初始详细内容应当为空");
+        assert!(app.current_file_path.is_none(), "初始文件路径应当为空");
+    }
+
+    #[test]
+    fn test_move_next() {
+        let container = create_mock_container();
+        // 假设总页数 (total_pages) 为 3，当前列表项从 0 开始
+        let mut app = AppState::new(&container);
+
+        // 初始选中 1
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        // 移动到下一项
+        Visualizer::move_next(&mut app);
+        assert_eq!(app.list_state.selected(), Some(2));
+
+        // 再次移动
+        Visualizer::move_next(&mut app);
+        assert_eq!(app.list_state.selected(), Some(3)); // 这里到达边界 (total_pages - 1)
+
+        // 测试边界回绕 (Wrap around)
+        Visualizer::move_next(&mut app);
+        assert_eq!(app.list_state.selected(), Some(1), "超出边界后应当回到 0");
+    }
+
+    #[test]
+    fn test_move_prev() {
+        let container = create_mock_container();
+        // 假设总页数 (total_pages) 为 3
+        let mut app = AppState::new(&container);
+
+        // 初始选中 1
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        // 在 1 的位置向上移动，应当触发回绕，移动到最后一条 (total_pages - 1)
+        Visualizer::move_prev(&mut app);
+        assert_eq!(app.list_state.selected(), Some(3), "在顶部向上移动应当回绕到最后一条");
+
+        // 正常向上移动
+        Visualizer::move_prev(&mut app);
+        assert_eq!(app.list_state.selected(), Some(2));
+    }
+
+    #[test]
+    fn test_key_down_in_file_list() {
+        let container = create_mock_container();
+        let mut app = AppState::new(&container);
+        
+        // 模拟按下 Down 键
+        let key_event = event::KeyEvent::new(KeyCode::Down, event::KeyModifiers::NONE);
+        Visualizer::handle_key_event(&mut app, key_event).unwrap();
+        
+        assert_eq!(app.list_state.selected(), Some(2));
+    }
 }
