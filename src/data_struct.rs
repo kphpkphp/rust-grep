@@ -69,7 +69,7 @@ pub struct DataStruct {
     pub values: Vec<String>,
 }
 
-
+#[derive(Debug)]
 pub enum DataStatus{
     SUCCESS,
     //让枚举携带额外的错误信息
@@ -83,7 +83,6 @@ pub struct DataStructPackage{
 }
 
 pub struct DataStructVec{
-    pub directory_path:String,
     pub data_structs: Vec<DataStructPackage>,
 }
 

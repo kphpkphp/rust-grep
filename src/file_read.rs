@@ -181,7 +181,38 @@ fn check_path_valid(path: &str) -> Result<(), PathReadError> {
     Ok(())
 }
 
-pub fn read_files_in_path(path: &str) -> Result<DataStructVec, PathReadError> {
+//读取单个文件时
+pub fn read_one_file(path: &std::path::Path)-> Result<DataStructVec, PathReadError>{
+
+    let mut data_structs_vec = Vec::new();
+    let file_path: std::path::PathBuf = path.to_path_buf();
+
+    match read_file_to_data_struct(&file_path) {
+        Ok(data_package) => {
+            data_structs_vec.push(data_package);
+        }
+        Err(e) => {
+            eprintln!("Failed to read file {}: {:?}", file_path.display(), e);
+            let error_package = DataStructPackage {
+                data_status: DataStatus::ERROR(e.to_string()),
+                data_path: file_path,
+                data_struct: DataStruct { values: Vec::new() },
+            };
+            data_structs_vec.push(error_package);
+        }
+    }
+
+    let read_vec = DataStructVec {
+        data_structs: data_structs_vec,
+    };
+
+    Ok(read_vec)
+
+}
+
+
+//读取路径时
+pub fn read_files_in_directory(path: &std::path::Path) -> Result<DataStructVec, PathReadError> {
 
     //  fs::read_dir 可能会因为权限等问题失败
     // 这里设计了Error的转换功能,通过from可以实现转换
@@ -221,7 +252,6 @@ pub fn read_files_in_path(path: &str) -> Result<DataStructVec, PathReadError> {
     }
 
     let read_vec = DataStructVec {
-        directory_path: path.to_string(),
         data_structs: data_structs_vec,
     };
 
@@ -365,7 +395,7 @@ mod tests {
     #[test]
     fn test_read_files_in_path_not_found() {
         let path = "D:/path/that/absolutely/does/not/exist_12345";
-        let result = read_files_in_path(path);
+        let result = read_files_in_directory(std::path::Path::new(path));
         
         // 验证确实返回了错误
         assert!(result.is_err(), "Expected an error for non-existent path");
@@ -379,11 +409,10 @@ mod tests {
         let dir = tempdir().expect("Failed to create temp dir");
         let dir_path = dir.path().to_str().unwrap();
 
-        let result = read_files_in_path(dir_path);
+        let result = read_files_in_directory(std::path::Path::new(dir_path));
         
         assert!(result.is_ok());
         let read_vec = result.unwrap();
-        assert_eq!(read_vec.directory_path, dir_path);
         assert!(read_vec.data_structs.is_empty(), "Data structs should be empty for an empty dir");
     }
 
@@ -412,13 +441,11 @@ mod tests {
         std::fs::create_dir(&sub_dir_path).unwrap();
 
         // 执行测试
-        let result = read_files_in_path(dir_path.to_str().unwrap());
+        let result = read_files_in_directory(dir_path);
         
         assert!(result.is_ok());
         let read_vec = result.unwrap();
 
-        // 验证返回结果
-        assert_eq!(read_vec.directory_path, dir_path.to_str().unwrap());
         // 我们只放了 2 个文件（1 个子目录被忽略），所以应该刚好有 2 个结果
         assert_eq!(read_vec.data_structs.len(), 2);
 
@@ -445,5 +472,59 @@ mod tests {
         assert_eq!(error_count, 1, "Should have 1 failed parsing parsed file");
     }
 
+    /// 测试11: 单个文件的读取
+    #[test]
+    fn test_read_one_file_success() {
+        // 1. 准备环境：创建一个临时目录和文件
+        let dir = tempdir().expect("Failed to create temp dir");
+        let file_path = dir.path().join("test_data.txt");
+        
+        // 假设 read_file_to_data_struct 能够处理这个文件的内容
+        let mut file = File::create(&file_path).expect("Failed to create temp file");
+        writeln!(file, "some dummy data").expect("Failed to write to file");
 
+        // 2. 执行测试目标
+        let result = read_one_file(&file_path);
+
+        // 3. 断言结果
+        assert!(result.is_ok());
+        let data_vec = result.unwrap();
+        
+        // 校验是否成功推入了一个数据包
+        assert_eq!(data_vec.data_structs.len(), 1);
+        // 这里可以根据 DataStatus 的具体定义进一步校验
+        // assert!(matches!(data_vec.data_structs[0].data_status, DataStatus::OK(_)));
+    }
+
+    #[test]
+    fn test_read_one_file_error_handling() {
+        // 1. 准备环境：指向一个绝对不存在的文件路径
+        let dir = tempdir().expect("Failed to create temp dir");
+        let non_existent_path = dir.path().join("missing_file.json");
+
+        // 2. 执行测试目标
+        // 注意：根据你的代码逻辑，read_one_file 内部捕获了错误并转换为 DataStatus::ERROR
+        // 所以外层的 Result 依然是 Ok
+        let result = read_one_file(&non_existent_path);
+
+        // 3. 断言结果
+        assert!(result.is_ok());
+        let data_vec = result.unwrap();
+        
+        assert_eq!(data_vec.data_structs.len(), 1);
+        
+        // 验证错误逻辑：检查是否生成了包含错误信息的数据包
+        let package = &data_vec.data_structs[0];
+        assert_eq!(package.data_path, non_existent_path);
+        
+        // 校验 data_status 是否为 ERROR 类型（假设 DataStatus 派生了 PartialEq）
+        if let DataStatus::ERROR(msg) = &package.data_status {
+            assert!(!msg.is_empty());
+            println!("Caught expected error: {}", msg);
+        } else {
+            panic!("Expected DataStatus::ERROR, but got {:?}", package.data_status);
+        }
+    }
+
+    
 }
