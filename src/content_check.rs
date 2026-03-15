@@ -3,10 +3,9 @@
 当前仅实现声明支持的文件解读
 */
 
-use crate::{data_struct::{DataStruct, DataStructPackage, FileContentData, FileMetadata, FilePageContainer, PageMetaData, PageMetaDataContainer, SearchHit}};
+use crate::data_struct::{DataStruct, DataStructPackage, FileContentData, FileMetadata, FilePageContainer, SearchHit};
 use std::collections::HashMap;
-use crate::config::{get_config};
-use std::path::{Path};
+use std::path::Path;
 
 enum QueryMode {
     Keyword(String),
@@ -65,23 +64,14 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
     data_struct_packages.iter()
     .enumerate()
     //map、filter_map必须有collect()才执行，for_each是直接执行
-    .for_each(|(idx,data_struct_package)|{
-            
+    .for_each(|(_idx, data_struct_package)| {
             //添加文件metadata
-            metadata_vec.push(FileMetadata{file_path:&data_struct_package.data_path});
-            
-            let lines_len;
+            metadata_vec.push(FileMetadata { file_path: &data_struct_package.data_path });
+
             //获取检索结果
             let matched_line = keyword_match(&data_struct_package.data_struct, query);
 
-            if matched_line.is_empty(){
-                lines_len = 0;
-            }
-            else{
-                lines_len = matched_line.len();
-            }
-
-            let  fcp = FileContentData{
+            let fcp = FileContentData {
                 query_result:matched_line
             };
             search_hit_map.insert(&data_struct_package.data_path, fcp);
@@ -89,8 +79,7 @@ pub fn query_data_struct<'a>(data_struct_packages: &'a [&'a DataStructPackage], 
         }
     );
     
-
-
+    //这里没有page_metadata,在要用的时候再装入
     let fpc = FilePageContainer{
         page_metadata : None,
         file_metadata_vec:metadata_vec,

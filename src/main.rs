@@ -6,6 +6,7 @@ mod config;
 mod show;
 
 use std::path; 
+//clap库能够自动生成帮助信息
 use clap::Parser;
 
 #[derive(Debug)]
@@ -52,8 +53,8 @@ fn main() {
     let path_str = args.path;
     let path_obj = path::Path::new(&path_str).to_path_buf();
 
-    let mut read_data_vec:data_struct::DataStructVec;
-    let mut check_result_container:data_struct::FilePageContainer;
+    let read_data_vec: data_struct::DataStructVec;
+    let mut check_result_container: data_struct::FilePageContainer;
 
 
     //获取文件数据
@@ -76,7 +77,10 @@ fn main() {
     let dsp_refs: Vec<&data_struct::DataStructPackage> = read_data_vec.data_structs.iter().collect();
     check_result_container = content_check::query_data_struct(&dsp_refs,&args.query).unwrap();
 
-    show::Visualizer::show(&check_result_container);
+    if let Err(e) = show::Visualizer::show(&mut check_result_container) {
+        eprintln!("展示错误: {}", e);
+        std::process::exit(1);
+    }
 
 
 }
@@ -88,6 +92,16 @@ mod tests {
     use super::*;
     use std::fs::File;
     use tempfile::tempdir; // 需要在 dev-dependencies 中添加 tempfile
+
+    #[test]
+    fn test_get_config_success() {
+        // 1. 确保初始化（如果 CONFIG 还没初始化过）
+        // 注意：全局变量在测试进程中是共享的，可能已被其他测试初始化
+        config::init(); 
+
+        // 2. 调用目标方法
+        let _config = config::get_config();
+    }
 
     #[test]
     fn test_check_path_type() {

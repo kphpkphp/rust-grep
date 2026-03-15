@@ -127,7 +127,8 @@ impl PageMetaData {
             self.current_page += 1;
             Ok(self.current_page)
         } else {
-            Err("已是末页")
+            self.current_page = 0;
+            Ok(self.current_page)
         }
     }
     
@@ -136,7 +137,9 @@ impl PageMetaData {
             self.current_page -= 1;
             Ok(self.current_page)
         } else {
-            Err("已是首页")
+            self.current_page = self.total_pages;
+            Ok(self.current_page)
+        
         }
     }
 }
@@ -160,7 +163,7 @@ impl PageMetaDataContainer {
         self.page_metadata_map.get_mut(&page_index)
     }
 
-    pub fn set_page_medatada(&mut self,page_index:usize,pmd:PageMetaData)->(){
+    pub fn set_page_metadata(&mut self,page_index:usize,pmd:PageMetaData)->(){
         self.page_metadata_map.insert(page_index, pmd);
     }
 
@@ -190,26 +193,54 @@ impl <'a> FilePageContainer<'a>{
     }
 
     //获取数据
-    pub fn get_file_content_page(&self,file_path:&Path)->Option<FileContentPage>{
-        let fcp = self.search_hit_map.get(file_path);
-        let pg_size = self.page_metadata.as_ref().unwrap().page_size;
-        //在这里，根据当前的页码和每页条数，获取切片
-        let start = (self.page_metadata.as_ref().unwrap().current_page-1) * pg_size;
+    pub fn get_file_content_page(&'a self, file_path: &Path) -> Option<FileContentPage<'a>> {
         
-        if start >= self.page_metadata.as_ref().unwrap().total_pages {
-            return None; // 页码超出范围
+        let fcp = self.search_hit_map.get(file_path)?;
+        
+        let meta = self.page_metadata.as_ref()?;
+        let pg_size = meta.page_size;
+        let current_page = meta.current_page;
+        let total_lines = meta.total_lines;
+
+        // current_page 为 1-based（1=第一页），故起始下标为 (current_page-1)*pg_size；current_page==0 时表示回绕到第一页
+        let start = current_page.saturating_sub(1) * pg_size;
+        
+        if start >= total_lines {
+            return None; 
         }
 
-        let end = (start + pg_size).min(fcp.unwrap().query_result.len());
+        let end = (start + pg_size).min(fcp.query_result.len());
         
-        // 获取 Vec 的切片引用
+        // 4. 返回切片
+        // 只要 self.search_hit_map 存储的是带有 'a 生命周期的引用或数据，
+        // 这里返回 FileContentPage<'a> 就会被编译器允许
         Some(FileContentPage {
-            query_result_page: &fcp.unwrap().query_result[start..end],
+            query_result_page: &fcp.query_result[start..end],
         })
     }
 
+    pub fn new_metadata_page(& mut self){
+        //max()保证最小值是1，这里的max()指的是“两者中取大者”
+        let p_size=get_config().page_size.max(1);
+        let tot_lines = self.file_metadata_vec.len();
+        //div_cell()向上取整
+        let p_num = tot_lines.div_ceil(p_size).max(1);
 
-    pub fn new_page(& mut self,fcp:&FileContentData){
+        let pmd = PageMetaData{
+            page_size:p_size,
+            total_lines:tot_lines,
+            total_pages:p_num,
+            //当前页码
+            current_page:1,
+        };
+
+        //Option，需要封装成Some()
+        self.page_metadata=Some(pmd);
+    }
+
+    pub fn new_content_page(& mut self,file_path:&Path){
+
+        let fcp = self.search_hit_map.get(file_path).unwrap();
 
         //max()保证最小值是1，这里的max()指的是“两者中取大者”
         let p_size=get_config().page_size.max(1);

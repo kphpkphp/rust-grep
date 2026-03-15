@@ -8,9 +8,8 @@
 基于ratatui和crossterm实现
 */
 
-use crate::data_struct::{DataStruct, FileContentData, FilePageContainer, SearchHit,FileContentPage};
-use crate::config::get_config;
-use anyhow::{Ok,Context};
+use crate::data_struct::{FileContentData, FilePageContainer, SearchHit, FileContentPage};
+use anyhow::Ok;
 use ratatui::{
     backend::{Backend,CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
@@ -24,8 +23,10 @@ use crossterm::event::{self, Event, KeyCode};
 use crossterm::ExecutableCommand;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
-
+//加Copy可以避免可能的借用冲突
+#[derive(Clone, Copy, PartialEq,Debug)]
 enum AppView{
     FileList,
     SearchDetail,
@@ -34,24 +35,28 @@ enum AppView{
 struct AppState<'a> {
     view: AppView,
     //我选择了让AppState仅持有FilePageContainer的引用
-    raw_data: &'a FilePageContainer<'a>,
+    //这里要注意，这个地方就需要让raw_data可变，因为后面会有数据处理等过程，需要这个数据是可变的
+    raw_data: &'a mut FilePageContainer<'a>,
     list_state: ListState,
     //注意，Rust禁止自己持有又指向自身一部分的指针，因此这里要不然是AppState直接持有FileContentData，同时持有FilePageContainer，要不然就是AppState仅持有FilePageContainer的引用，同时持有指向FilePageContainer的另一个引用
-    current_detail:Option<FileContentPage<'a>>,
+    //这种会变的字段不要存在大结构体里，随用随生成吧，要不然过不了Rust生命周期检查，这里要不然就是随用随生成，要不然就要copy，想从自身成员指向自身成员是Rust不怎么支持的
+    // current_detail:Option<FileContentPage<'a>>,
     current_file_path:Option<&'a Path> ,
+    pub should_quit:bool,
 }
 
 impl<'a> AppState<'a>{
-    fn new(data: &'a FilePageContainer<'a>) -> Self {
+    fn new(data: &'a mut FilePageContainer<'a>) -> Self {
         let mut list_state = ListState::default();
         //从1开始
-        list_state.select(Some(1));
+        list_state.select(Some(0));
         Self {
             view: AppView::FileList,
             raw_data: data,
             list_state,
-            current_detail:None,
-            current_file_path:None
+            // current_detail:None,
+            current_file_path:None,
+            should_quit:false,
         }
     }
 }
@@ -61,41 +66,43 @@ pub struct Visualizer;
 
 impl Visualizer {
     /// 外部调用接口：传入数据并接管终端进行展示
-    pub fn show<'a>(data: &'a FilePageContainer<'a>) -> anyhow::Result<()> {
+    pub fn show<'a>(data: &'a mut FilePageContainer<'a>) -> anyhow::Result<()> {
         let mut app = AppState::new(data);
-        
-        // 渲染循环
+        Self::init_page_metadata(& mut app);
         let mut terminal = setup_terminal()?;
+        // 清空启动时缓冲的按键，避免被误当作第一次输入（如自动触发 Enter）
+        drain_pending_events();
         let res = Self::run_app(&mut terminal, &mut app);
         restore_terminal(terminal)?;
-        
         res
     }
 
     //将按键处理的状态机逻辑剥离出来（将event::read()这个阻塞式且依赖环境的I/O操作单独放置，将可测试的逻辑拆出来）以便于测试
     pub fn handle_key_event(app: &mut AppState, key: event::KeyEvent)-> anyhow::Result<()>{
+        /*
+        crossterm中，KeyEvent包括Press、Repeat、Release等，下面的逻辑代码没有按照这些做区分，如果不屏蔽，会对每一种key.code都执行move_next/move_prev，导致翻页总是一下两页
+        在这里，屏蔽掉其他的逻辑，仅处理“按下”事件，即可实现按一下动一下的效果
+        */
+        if !key.is_press() {
+            return Ok(());
+        }
         match app.view {
             AppView::FileList => match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Down => {Self::move_next(app);Ok(())},
+                KeyCode::Char('q') =>{app.should_quit=true;Ok(())},
+                KeyCode::Down => {Self::move_next(app);  Ok(())},
                 KeyCode::Up => {Self::move_prev(app);Ok(())},
                 KeyCode::Enter => {
-                    if get_config().on_test{
-                        // 测试用数据（注意这里的Box::leak是强行构造持久变量的方法）
-                        let static_ref = mock_fetch_detail();
-                        app.current_detail = Some(static_ref); 
-                    }
-                    else{
                         //获取当前的Path-key
                         if let Some(index) = app.list_state.selected() {
-                            if let Some(selected_file) = app.raw_data.file_metadata_vec.get(index) {
-                                let file_path = &selected_file.file_path;
-                                app.current_detail = app.raw_data.get_file_content_page(file_path); 
-                                app.current_file_path = Some(file_path);
-                            }
+                            //这里要防止超过最小index,saturating_sub是保证不小于0的写法，另外，usize是不能小于0的
+                            let selected_file = app.raw_data.file_metadata_vec.get(index).unwrap();
+                            let file_path = &selected_file.file_path;
+                            app.current_file_path = Some(file_path);
                         }
-                    }
                     app.view = AppView::SearchDetail;
+                    // 进入文件内容视图时必须初始化内容页分页元数据，否则 Down/Up 使用的是文件列表的 total_pages，导致翻页无反应
+                    Self::init_page_metadata(app);
+                    app.list_state.select(Some(0));
 
                     Ok(())
 
@@ -103,13 +110,12 @@ impl Visualizer {
                 _ => Ok(())
             },
             AppView::SearchDetail => match key.code {
-                KeyCode::Esc | KeyCode::Backspace => {app.view = AppView::FileList; Ok(())},
-                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Esc | KeyCode::Backspace => {app.view = AppView::FileList; Self::init_page_metadata(app); Ok(())},
+                KeyCode::Char('q') => {app.should_quit=true;Ok(())},
                 KeyCode::Down => {
                     Self::move_next(app);
-                    
                     Ok(())},
-                KeyCode::Up => {Self::move_prev(app);Ok(())},
+                KeyCode::Up => {Self::move_prev(app);  Ok(())},
                 _ => Ok(())
             },
         }
@@ -125,30 +131,90 @@ impl Visualizer {
         Ok(())
     }
 
+    fn init_page_metadata(app:&mut AppState){
+
+        //这里的意思是，通过模式匹配将里面的内容解耦出来，这样就可以分别改其中的一部分，而不是整个大容器传来传去
+        let AppState { view, raw_data, current_file_path, .. } = app;
+
+        match view{
+            AppView::FileList=> {raw_data.new_metadata_page()},
+            AppView::SearchDetail=>{
+
+                raw_data.new_content_page(current_file_path.as_ref().unwrap())
+            },
+        };
+
+    }
+
     fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut AppState) -> anyhow::Result<()> {
         loop {
-            //anyhow包装的错误有硬性类型要求，直接?不满足要求，这里必须经过转换
-            terminal.draw(|f| ui(f, app)).map_err(|e| anyhow::anyhow!("Terminal error: {:?}", e))?;
-            //这里需要将app的可变借用独立成一个函数，此时检查器才不会报借用冲突
-            Self::process_key_action(app);
+            if app.should_quit{
+                return Ok(())
+            }
+            {
+                //令raw_data准备好展示的元数据(挪到各个动作执行完的地方)
+                // Self::init_page_metadata(app);
+            }
+
+            {
+                //anyhow包装的错误有硬性类型要求，直接?不满足要求，这里必须经过转换
+                terminal.draw(|f| ui(f, app)).map_err(|e| anyhow::anyhow!("Terminal error: {:?}", e))?;
+            }
+
+            {
+                //这里需要将app的可变借用独立成一个函数，此时检查器才不会报借用冲突
+                if let Err(e) = Self::process_key_action(app) {
+                    return Err(e);
+                }
+            }
         }
     }
 
-    //ListState是专用于存储翻页等滚动的索引的
+    //ListState是专用于存储翻页等滚动的索引的。注意：不要用 select()，否则会把 offset 重置为 0 导致列表总是跳回第一行
     fn move_next(app: &mut AppState) {
-        let i = match app.list_state.selected() {
-            Some(i) => if i >= app.raw_data.page_metadata.as_ref().unwrap().total_lines { 1 } else { i + 1 },
-            None => 0,
-        };
-        app.list_state.select(Some(i));
+
+        match app.view{
+            AppView::FileList=>{
+                let i = match app.list_state.selected() {
+                    Some(i) => if i >= (app.raw_data.page_metadata.as_ref().unwrap().total_lines.saturating_sub(1)) { 0 } else { i+1 },
+                    None => 0,
+                };
+                app.list_state.select(Some(i));
+            },
+            AppView::SearchDetail=>{
+                let i = match app.list_state.selected() {
+                    Some(i) => if i >= (app.raw_data.page_metadata.as_ref().unwrap().total_pages.saturating_sub(1)) { 0 } else { i+1 },
+                    None => 0,
+                };
+                app.list_state.select(Some(i));
+                let _ = app.raw_data.next_page();
+            }
+        }
+
     }
 
     fn move_prev(app: &mut AppState) {
-        let i = match app.list_state.selected() {
-            Some(i) => if i == 1 { app.raw_data.page_metadata.as_ref().unwrap().total_lines } else { i - 1 },
-            None => 0,
-        };
-        app.list_state.select(Some(i));
+
+        match app.view{
+            AppView::FileList=>{
+                let total = app.raw_data.page_metadata.as_ref().unwrap().total_lines;
+                let i = match app.list_state.selected() {
+                    Some(i) => if i == 0 { total.saturating_sub(1) } else { i.saturating_sub(1) },
+                    None => 0,
+                };
+                app.list_state.select(Some(i));
+            },
+            AppView::SearchDetail=>{
+                let total = app.raw_data.page_metadata.as_ref().unwrap().total_pages;
+                let i = match app.list_state.selected() {
+                    Some(i) => if i == 0 { total.saturating_sub(1) } else { i.saturating_sub(1) },
+                    None => 0,
+                };
+                app.list_state.select(Some(i));
+                let _ = app.raw_data.prev_page();
+            }
+        }
+
     }
 
 
@@ -158,7 +224,7 @@ impl Visualizer {
 
 // --- UI 渲染函数 ---
 
-fn ui(f: &mut Frame, app: & mut AppState) {
+fn ui(f: &mut Frame, app: &mut AppState) {
     //将屏幕分成两个区域：chunks[0]主内容区和chunks[1]工具栏区
     let chunks = Layout::default()
         //垂直排列
@@ -171,8 +237,18 @@ fn ui(f: &mut Frame, app: & mut AppState) {
         .split(f.area());
 
     match app.view {
-        AppView::FileList => render_file_list(f, app, chunks[0]),
-        AppView::SearchDetail => render_search_detail(f, app, chunks[0]),
+        AppView::FileList => {
+            render_file_list(f, app, chunks[0])
+        },
+        AppView::SearchDetail => {
+            if let Some(path) = app.current_file_path {
+                // 现场获取切片，生命周期仅限于此闭包，完美避开报错
+                let detail = app.raw_data.get_file_content_page(path); 
+                // render_detail_view(f, &detail, f.size());
+                render_search_detail(f, &detail,path, chunks[0])}
+                
+            }
+            
     }
 
     // 底部帮助栏
@@ -184,7 +260,9 @@ fn ui(f: &mut Frame, app: & mut AppState) {
 }
 
 //渲染元数据列表的逻辑
-fn render_file_list(f: &mut Frame, app: &mut AppState, area: Rect) {
+fn render_file_list(f: &mut Frame, app: & mut AppState, area: Rect) {
+
+
     //将数据转换为UI组件
     let items: Vec<ListItem> = app.raw_data.file_metadata_vec.iter()
         .enumerate()
@@ -200,7 +278,7 @@ fn render_file_list(f: &mut Frame, app: &mut AppState, area: Rect) {
         .block(Block::default()
             //加边框
             .borders(Borders::ALL)
-            //动态显示页码(这里需要看一下翻页逻辑是否实现了)
+            //动态显示页码
             .title(format!(" Files (Page {}/{}) ", app.raw_data.page_metadata.as_ref().unwrap().current_page, &app.raw_data.page_metadata.as_ref().unwrap().total_pages)))
         .highlight_style(Style::default()
             .bg(Color::Blue)//选中项背景变蓝
@@ -213,9 +291,9 @@ fn render_file_list(f: &mut Frame, app: &mut AppState, area: Rect) {
 
 
 //渲染检索结果的逻辑
-//注意，这里的逻辑恐怕不正确，要看下是否能正确的获取到数据
-fn render_search_detail(f: &mut Frame, app: &AppState, area: Rect) {
-    if let Some(detail) = &app.current_detail {
+//注意这里的实现，这里没有传入app，而是仅传入所需字段,并且现用现生成（为避免引用冲突问题）
+fn render_search_detail(f: &mut Frame, current_detail: &Option<FileContentPage>,current_path:&Path, area: Rect) {
+    if let Some(detail) = current_detail {
         let mut text = Vec::new();
         
         //切片直接迭代，非切片需要放引用（为了模式匹配）
@@ -263,12 +341,19 @@ fn render_search_detail(f: &mut Frame, app: &AppState, area: Rect) {
         }
 
         let p = Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(format!(" File: {} ", app.current_file_path.unwrap().display())));
+            .block(Block::default().borders(Borders::ALL).title(format!(" File: {} ", current_path.display())));
         f.render_widget(p, area);
     }
 }
 
 // --- 终端环境设置 ---
+
+/// 清空当前未处理的按键事件，避免启动时缓冲的 Enter 等被当作第一次输入
+fn drain_pending_events() {
+    while event::poll(Duration::ZERO).unwrap_or(false) {
+        let _ = event::read();
+    }
+}
 
 fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     crossterm::terminal::enable_raw_mode()?;
@@ -344,7 +429,9 @@ mod tests{
     use std::collections::HashMap;
     // 从 data_struct 引入以下结构体来构造测试数据
     use crate::data_struct::{FilePageContainer, PageMetaData, FileMetadata};
+    use crate::config;
 
+    
 
     fn raw_mock_fetch_detail<'a>() -> (FileContentData<'a>,FileContentData<'a>) {
         
@@ -421,8 +508,8 @@ mod tests{
         //HashMap要这样创建，生命周期写在类型声明处，新建用default()
         let mut shm:HashMap<&'a Path, FileContentData<'a>> = HashMap::default();
 
-        shm.insert(file_pathbuf_1, fcps_1);
-        shm.insert(file_pathbuf_1, fcps_2);
+        shm.insert(file_pathbuf_1.as_path(), fcps_1);
+        shm.insert(file_pathbuf_2.as_path(), fcps_2);
 
 
         FilePageContainer {
@@ -437,67 +524,77 @@ mod tests{
     #[test]
     fn test_app_state_initialization() {
         // 1. 准备测试数据
-        let container = create_mock_container();
+        let mut container = create_mock_container();
         
         // 2. 初始化 AppState
-        let app = AppState::new(&container);
+        let app = AppState::new(& mut container);
 
         // 3. 断言初始状态是否符合预期
         assert!(matches!(app.view, AppView::FileList), "初始视图应当是 FileList");
-        assert_eq!(app.list_state.selected(), Some(1), "列表应当默认选中第 1 项");
-        assert!(app.current_detail.is_none(), "初始详细内容应当为空");
+        assert_eq!(app.list_state.selected(), Some(0), "列表应当默认选中第 1 项");
         assert!(app.current_file_path.is_none(), "初始文件路径应当为空");
+
     }
 
     #[test]
     fn test_move_next() {
-        let container = create_mock_container();
+        let mut container = create_mock_container();
         // 假设总页数 (total_pages) 为 3，当前列表项从 0 开始
-        let mut app = AppState::new(&container);
+        let mut app = AppState::new(&mut container);
 
-        // 初始选中 1
-        assert_eq!(app.list_state.selected(), Some(1));
+        // 初始选中 0
+        assert_eq!(app.list_state.selected(), Some(0));
 
         // 移动到下一项
         Visualizer::move_next(&mut app);
-        assert_eq!(app.list_state.selected(), Some(2));
+        assert_eq!(app.list_state.selected(), Some(1));
 
         // 再次移动
         Visualizer::move_next(&mut app);
-        assert_eq!(app.list_state.selected(), Some(3)); // 这里到达边界 (total_pages - 1)
+        assert_eq!(app.list_state.selected(), Some(2)); // 这里到达边界 (total_pages - 1)
 
         // 测试边界回绕 (Wrap around)
         Visualizer::move_next(&mut app);
-        assert_eq!(app.list_state.selected(), Some(1), "超出边界后应当回到 0");
+        assert_eq!(app.list_state.selected(), Some(0), "超出边界后应当回到 0");
     }
 
     #[test]
     fn test_move_prev() {
-        let container = create_mock_container();
+        let mut container = create_mock_container();
         // 假设总页数 (total_pages) 为 3
-        let mut app = AppState::new(&container);
+        let mut app = AppState::new(&mut container);
 
-        // 初始选中 1
-        assert_eq!(app.list_state.selected(), Some(1));
+        // 初始选中 0
+        assert_eq!(app.list_state.selected(), Some(0));
 
-        // 在 1 的位置向上移动，应当触发回绕，移动到最后一条 (total_pages - 1)
+        // 在 0 的位置向上移动，应当触发回绕，移动到最后一条 (total_pages - 1)
         Visualizer::move_prev(&mut app);
-        assert_eq!(app.list_state.selected(), Some(3), "在顶部向上移动应当回绕到最后一条");
+        assert_eq!(app.list_state.selected(), Some(2), "在顶部向上移动应当回绕到最后一条");
 
         // 正常向上移动
         Visualizer::move_prev(&mut app);
-        assert_eq!(app.list_state.selected(), Some(2));
+        assert_eq!(app.list_state.selected(), Some(1));
     }
 
     #[test]
     fn test_key_down_in_file_list() {
-        let container = create_mock_container();
-        let mut app = AppState::new(&container);
-        
+        let mut container = create_mock_container();
+        let mut app = AppState::new(&mut container);
+        config::init(); 
+
         // 模拟按下 Down 键
         let key_event = event::KeyEvent::new(KeyCode::Down, event::KeyModifiers::NONE);
         Visualizer::handle_key_event(&mut app, key_event).unwrap();
         
-        assert_eq!(app.list_state.selected(), Some(2));
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        let key_event = event::KeyEvent::new(KeyCode::Enter, event::KeyModifiers::NONE);
+        Visualizer::handle_key_event(&mut app, key_event).unwrap();
+
+        assert!(!app.current_file_path.is_none());
+        // 进入详情后 list_state 表示内容页索引（0-based），应为第一页 0
+        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.view, AppView::SearchDetail);
     }
+
 }
